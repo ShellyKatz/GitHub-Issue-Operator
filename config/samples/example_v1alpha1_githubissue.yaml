@@ -1,0 +1,9 @@
+apiVersion: example.training.redhat.com/v1alpha1
+kind: GitHubIssue
+metadata:
+  name: githubissue-sample
+spec:
+  # Add fields here
+  repo: ShellyKatz/TestGitIssues
+  title: firstTrial
+  description: hello!
