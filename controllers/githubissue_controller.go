@@ -18,9 +18,10 @@ package controllers
 
 import (
 	"context"
-	"os"
-
 	"k8s.io/apimachinery/pkg/api/errors"
+	"os"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
 	//"strconv"
 	"strings"
 
@@ -78,16 +79,47 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	//token := "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"
 	token := os.Getenv("GITHUB_TOKEN")
-	//fmt.Println("token!!!!", token)
-	//check if issue is already on github repo
 	issue, _ := findIssue(ghIssue.Spec.Repo, ghIssue.Spec.Title, token)
 	fmt.Println("find issue is ok")
 
 	ownerRepo := ghIssue.Spec.Repo
 	title := ghIssue.Spec.Title
 	description := ghIssue.Spec.Description
+
+	finalizerName := "example.training.redhat.com/finalizer"
+
+	// examine DeletionTimestamp to determine if object is under deletion
+	if ghIssue.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, so if it does not have our finalizer,
+		// then lets add the finalizer and update the object. This is equivalent
+		// registering our finalizer.
+		if !containsString(ghIssue.GetFinalizers(), finalizerName) {
+			controllerutil.AddFinalizer(&ghIssue, finalizerName)
+			if err := r.Update(ctx, &ghIssue); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if containsString(ghIssue.GetFinalizers(), finalizerName) {
+			// our finalizer is present, so lets handle any external dependency
+			if err := r.deleteExternalResources(ownerRepo, title, description, string(issue.IssueNumber), token); err != nil {
+				// if fail to delete the external dependency here, return with error
+				// so that it can be retried
+				return ctrl.Result{}, err
+			}
+
+			// remove our finalizer from the list and update it.
+			controllerutil.RemoveFinalizer(&ghIssue, finalizerName)
+			if err := r.Update(ctx, &ghIssue); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
+		// Stop reconciliation as the item is being deleted
+		return ctrl.Result{}, nil
+	}
 
 	//if issue wasn't found (according to title) on github, create it
 	if issue == nil {
@@ -102,7 +134,7 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	//update status fields
 	patch := client.MergeFrom(ghIssue.DeepCopy())
-	fmt.Printf("state of object: %s state from web: %s", ghIssue.Status.State, issue.State)
+	//fmt.Printf("state of object: %s state from web: %s \n", ghIssue.Status.State, issue.State)
 	ghIssue.Status.State = issue.State
 
 	ghIssue.Status.LastUpdateTimestamp = issue.LastUpdateTimestamp
@@ -113,7 +145,7 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	fmt.Printf("status is: %s \n", ghIssue.Status.State)
+	fmt.Printf("title: %s \ndescription: %s\nstatus is: %s \n", ghIssue.Spec.Title, ghIssue.Spec.Description, ghIssue.Status.State)
 	fmt.Printf("last updated at %s \n", ghIssue.Status.LastUpdateTimestamp)
 
 	//if title already exists in repo, edit description
@@ -246,5 +278,53 @@ func edit(ownerRepo, title, description, issueNumber, token string) {
 		fmt.Println(string(body))
 		log.Fatal(err)
 	}
-
 }
+
+func (r *GitHubIssueReconciler) deleteExternalResources(ownerRepo, title, description, issueNumber, token string) error {
+	fmt.Printf("editing %s \n", issueNumber)
+	apiURL := "https://api.github.com/repos/" + ownerRepo + "/issues/" + issueNumber
+	//title is the only required field
+	issueData := Issue{Repo: ownerRepo, Title: title, Description: description, IssueNumber: json.Number(issueNumber), State: "closed"}
+	//make it json
+	jsonData, _ := json.Marshal(issueData)
+	//creating client to set custom headers for Authorization
+	client := &http.Client{}
+	req, _ := http.NewRequest("PATCH", apiURL, bytes.NewReader(jsonData))
+
+	req.Header.Set("Authorization", "token "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Response code is %d\n", resp.StatusCode)
+		body, _ := ioutil.ReadAll(resp.Body)
+		//print body as it may contain hints in case of errors
+		fmt.Println(string(body))
+		log.Fatal(err)
+	}
+
+	return nil
+}
+
+// Helper functions to check and remove string from a slice of strings.
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+//func removeString(slice []string, s string) (result []string) {
+//	for _, item := range slice {
+//		if item == s {
+//			continue
+//		}
+//		result = append(result, item)
+//	}
+//	return
+//}
