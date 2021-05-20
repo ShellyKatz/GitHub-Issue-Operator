@@ -39,7 +39,9 @@ spec:
               description:
                 type: string
               repo:
-                description: Edit githubissue_types.go to remove/update
+                description: 'INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
+                  Important: Run "make" to regenerate code after modifying this file'
+                pattern: ^[a-zA-Z0-9\_.-]+/[a-zA-Z0-9\_.-]+$
                 type: string
               title:
                 type: string

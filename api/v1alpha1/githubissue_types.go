@@ -27,8 +27,7 @@ import (
 type GitHubIssueSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-
-	//Edit githubissue_types.go to remove/update
+	// +kubebuilder:validation:Pattern=^[a-zA-Z0-9\_.-]+/[a-zA-Z0-9\_.-]+$
 	Repo        string `json:"repo"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
