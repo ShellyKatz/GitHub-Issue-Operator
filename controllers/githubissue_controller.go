@@ -37,6 +37,8 @@ import (
 	"net/http"
 )
 
+const FinalizerName = "example.training.redhat.com/finalizer"
+
 // GitHubIssueReconciler reconciles a GitHubIssue object
 type GitHubIssueReconciler struct {
 	client.Client
@@ -58,11 +60,11 @@ type GitHubIssueReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.7.2/pkg/reconcile
 func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = r.Log.WithValues("githubissue", req.NamespacedName)
+	log := r.Log.WithValues("githubissue", req.NamespacedName)
 
 	// your logic here
-	println()
-	r.Log.Info("\nENTERED RECONCILE WITH REQ")
+	println("\n#########################################################################\n")
+	log.Info("\nENTERED RECONCILE WITH")
 
 	//get the object from the API server
 	ghIssue := examplev1alpha1.GitHubIssue{}
@@ -70,80 +72,53 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if err != nil {
 		if errors.IsNotFound(err) {
-			fmt.Print("object was deleted (\"not found error\") - return with nil error\n")
+			log.Info("\nobject was deleted (\"not found error\") - return with nil error")
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
+	//bring the issue from the real world (if doesn't exists return nil and err)
 	token := os.Getenv("GITHUB_TOKEN")
-	issue, _ := findIssue(ghIssue.Spec.Repo, ghIssue.Spec.Title, token)
+	issue, err := findIssue(ghIssue.Spec, token) //TODO- HANDLE ERR/PRINT TO LOG
 	fmt.Println("find issue is ok")
-
-	ownerRepo := ghIssue.Spec.Repo
-	title := ghIssue.Spec.Title
-	description := ghIssue.Spec.Description
-
-	finalizerName := "example.training.redhat.com/finalizer"
 
 	// examine DeletionTimestamp to determine if object is under deletion
 	if ghIssue.ObjectMeta.DeletionTimestamp.IsZero() {
 		// The object is not being deleted, so if it does not have our finalizer,
-		// then lets add the finalizer and update the object. This is equivalent
-		// registering our finalizer.
-		if !containsString(ghIssue.GetFinalizers(), finalizerName) {
-			controllerutil.AddFinalizer(&ghIssue, finalizerName)
+		// add the finalizer and update the object.
+		if !containsString(ghIssue.GetFinalizers(), FinalizerName) {
+			controllerutil.AddFinalizer(&ghIssue, FinalizerName)
 			if err := r.Update(ctx, &ghIssue); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	} else {
 		// The object is being deleted
-		if containsString(ghIssue.GetFinalizers(), finalizerName) {
-			// our finalizer is present, so lets handle any external dependency
-			// if the issue isn't on github, skip the external handle and just remove finalizer
-			if issue != nil {
-				if err := r.deleteExternalResources(ownerRepo, title, description, string(issue.IssueNumber), token); err != nil {
-					// if fail to delete the external dependency here, return with error
-					// so that it can be retried
-					return ctrl.Result{}, err
-				}
-			}
-			// remove our finalizer from the list and update it.
-			controllerutil.RemoveFinalizer(&ghIssue, finalizerName)
-			if err := r.Update(ctx, &ghIssue); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		// Stop reconciliation as the item is being deleted
-		return ctrl.Result{}, nil
+		err := r.deleteGithubIssueObject(ghIssue, issue, ctx, token)
+		return ctrl.Result{}, err
 	}
 
 	// if issue wasn't found (according to title) on github, create it
-	if issue == nil {
+	if issue == nil { //TODO check according to err not ot issue == nil
 		//create a git request with github API
-		issue, err = create(ownerRepo, title, description, token)
+		issue, err = create(ghIssue.Spec, token)
 		if err != nil {
 			fmt.Printf("create issue failed. error:, %s \n", err)
 		} else {
-			fmt.Printf("create issue is ok, created issue %s \n", string(issue.IssueNumber))
+			fmt.Printf("created issue %s \n", string(issue.IssueNumber))
 		}
 	}
 
-	//if issue (title) already exists in repo, edit description
-	if description != issue.Description {
+	// edit description if needed
+	if ghIssue.Spec.Description != issue.Description {
 		//edit description only if there's a difference OR issue was closed
-		edit(ownerRepo, title, description, string(issue.IssueNumber), token)
+		edit(ghIssue.Spec, string(issue.IssueNumber), token)
 		fmt.Printf("edit issue is ok, edited issue %s \n\n", string(issue.IssueNumber))
 	}
 
 	// update status fields
-	patch := client.MergeFrom(ghIssue.DeepCopy())
-	// fmt.Printf("state of object: %s state from web: %s \n", ghIssue.Status.State, issue.State)
-	ghIssue.Status.State = issue.State
-
-	ghIssue.Status.LastUpdateTimestamp = issue.LastUpdateTimestamp
-	err = r.Client.Status().Patch(ctx, &ghIssue, patch)
+	err = r.updateStatus(ghIssue, issue, ctx)
 
 	if err != nil {
 		fmt.Print("status patch failed \n")
@@ -173,10 +148,10 @@ type NewIssue struct {
 // function I copied from:
 // https://vorozhko.net/create-github-issue-ticket-with-golang
 
-func create(ownerRepo, title, description, token string) (*Issue, error) {
-	apiURL := "https://api.github.com/repos/" + ownerRepo + "/issues"
+func create(ghIssueSpec examplev1alpha1.GitHubIssueSpec, token string) (*Issue, error) {
+	apiURL := "https://api.github.com/repos/" + ghIssueSpec.Repo + "/issues"
 	// title is the only required field
-	issueData := NewIssue{Title: title, Description: description}
+	issueData := NewIssue{Title: ghIssueSpec.Title, Description: ghIssueSpec.Description}
 	// make it json
 	jsonData, _ := json.Marshal(issueData)
 	// creating client to set custom headers for Authorization
@@ -200,7 +175,7 @@ func create(ownerRepo, title, description, token string) (*Issue, error) {
 	body, _ := ioutil.ReadAll(resp.Body)
 	var issue *Issue
 	err = json.Unmarshal(body, &issue)
-	fmt.Println(string(body))
+	//fmt.Println(string(body))
 	return issue, nil
 }
 
@@ -218,10 +193,10 @@ type Issue struct {
 	LastUpdateTimestamp string      `json:"updated_at"`
 }
 
-func findIssue(ownerRepo, title, token string) (*Issue, error) {
-	apiURL := "https://api.github.com/repos/" + ownerRepo + "/issues?state=all"
+func findIssue(ghIssueSpec examplev1alpha1.GitHubIssueSpec, token string) (*Issue, error) {
+	apiURL := "https://api.github.com/repos/" + ghIssueSpec.Repo + "/issues?state=all"
 	// split ownerRepo to owner and repository
-	ownerAndRepo := strings.Split(ownerRepo, "/")
+	ownerAndRepo := strings.Split(ghIssueSpec.Repo, "/")
 	// title is the only required field
 	repoData := Repo{Repo: ownerAndRepo[0], Owner: ownerAndRepo[1]}
 	// make it json
@@ -243,7 +218,7 @@ func findIssue(ownerRepo, title, token string) (*Issue, error) {
 	err = json.Unmarshal(body, &issues)
 	// loop over issues titles and look for the title given to the function
 	for _, issue := range issues {
-		if issue.Title == title {
+		if issue.Title == ghIssueSpec.Title {
 			return &issue, nil
 		}
 	}
@@ -251,11 +226,12 @@ func findIssue(ownerRepo, title, token string) (*Issue, error) {
 }
 
 // edit : update issue description
-func edit(ownerRepo, title, description, issueNumber, token string) {
+func edit(ghIssueSpec examplev1alpha1.GitHubIssueSpec, issueNumber, token string) {
 	fmt.Printf("editing %s \n", issueNumber)
-	apiURL := "https://api.github.com/repos/" + ownerRepo + "/issues/" + issueNumber
+	apiURL := "https://api.github.com/repos/" + ghIssueSpec.Repo + "/issues/" + issueNumber
 	// title is the only required field
-	issueData := Issue{Repo: ownerRepo, Title: title, Description: description, IssueNumber: json.Number(issueNumber)}
+	issueData := Issue{Repo: ghIssueSpec.Repo, Title: ghIssueSpec.Title, Description: ghIssueSpec.Description,
+		IssueNumber: json.Number(issueNumber)}
 	// make it json
 	jsonData, _ := json.Marshal(issueData)
 	// creating client to set custom headers for Authorization
@@ -278,13 +254,39 @@ func edit(ownerRepo, title, description, issueNumber, token string) {
 	}
 }
 
+//deleteGithubIssueObject: delete the object, it finalizer exists - handle it and then delete object
+func (r *GitHubIssueReconciler) deleteGithubIssueObject(ghIssue examplev1alpha1.GitHubIssue, realWorldIssue *Issue,
+	ctx context.Context, token string) error {
+	if containsString(ghIssue.GetFinalizers(), FinalizerName) {
+		// our finalizer is present, so lets handle any external dependency
+		// if the issue isn't on github, skip the external handle and just remove finalizer
+		if realWorldIssue != nil {
+			if err := r.deleteExternalResources(ghIssue.Spec, string(realWorldIssue.IssueNumber), token); err != nil {
+				// if fail to delete the external dependency here, return with error
+				// so that it can be retried
+				return err
+			}
+		}
+		// remove our finalizer from the list and update it.
+		controllerutil.RemoveFinalizer(&ghIssue, FinalizerName)
+		if err := r.Update(ctx, &ghIssue); err != nil {
+			return err
+		}
+	}
+	// Stop reconciliation as the item is being deleted
+	return nil
+
+}
+
 //deleteExternalResources: close github issue
-func (r *GitHubIssueReconciler) deleteExternalResources(ownerRepo, title, description, issueNumber, token string) error {
+func (r *GitHubIssueReconciler) deleteExternalResources(ghIssueSpec examplev1alpha1.GitHubIssueSpec,
+	issueNumber, token string) error {
 	fmt.Printf("deleting %s \n", issueNumber)
 
-	apiURL := "https://api.github.com/repos/" + ownerRepo + "/issues/" + issueNumber
+	apiURL := "https://api.github.com/repos/" + ghIssueSpec.Repo + "/issues/" + issueNumber
 	// title is the only required field
-	issueData := Issue{Repo: ownerRepo, Title: title, Description: description, IssueNumber: json.Number(issueNumber), State: "closed"}
+	issueData := Issue{Repo: ghIssueSpec.Repo, Title: ghIssueSpec.Title, Description: ghIssueSpec.Description,
+		IssueNumber: json.Number(issueNumber), State: "closed"}
 	// make it json
 	jsonData, _ := json.Marshal(issueData)
 	// creating client to set custom headers for Authorization
@@ -317,4 +319,13 @@ func containsString(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func (r *GitHubIssueReconciler) updateStatus(ghIssue examplev1alpha1.GitHubIssue, realWorldIssue *Issue,
+	ctx context.Context) error {
+	patch := client.MergeFrom(ghIssue.DeepCopy())
+	ghIssue.Status.State = realWorldIssue.State
+	ghIssue.Status.LastUpdateTimestamp = realWorldIssue.LastUpdateTimestamp
+	err := r.Client.Status().Patch(ctx, &ghIssue, patch)
+	return err
 }
