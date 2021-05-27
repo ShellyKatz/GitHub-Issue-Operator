@@ -38,6 +38,7 @@ import (
 )
 
 const FinalizerName = "example.training.redhat.com/finalizer"
+const TitleNotFound = "object title not found on github"
 
 // GitHubIssueReconciler reconciles a GitHubIssue object
 type GitHubIssueReconciler struct {
@@ -61,8 +62,6 @@ type GitHubIssueReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.7.2/pkg/reconcile
 func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("githubissue", req.NamespacedName)
-
-	// your logic here
 	println("\n#########################################################################\n")
 	log.Info("\nENTERED RECONCILE WITH")
 
@@ -80,7 +79,10 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	//bring the issue from the real world (if doesn't exists return nil and err)
 	token := os.Getenv("GITHUB_TOKEN")
-	issue, err := findIssue(ghIssue.Spec, token) //TODO- HANDLE ERR/PRINT TO LOG
+	issue, findIssueErr := findIssue(ghIssue.Spec, token) //TODO- HANDLE ERR/PRINT TO LOG
+	if findIssueErr != nil && fmt.Sprintf("%v", findIssueErr) != TitleNotFound {
+		return ctrl.Result{}, findIssueErr
+	}
 	fmt.Println("find issue is ok")
 
 	// examine DeletionTimestamp to determine if object is under deletion
@@ -88,19 +90,18 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// The object is not being deleted, so if it does not have our finalizer,
 		// add the finalizer and update the object.
 		if !containsString(ghIssue.GetFinalizers(), FinalizerName) {
-			controllerutil.AddFinalizer(&ghIssue, FinalizerName)
-			if err := r.Update(ctx, &ghIssue); err != nil {
+			if err = r.registerFinalizer(ghIssue, ctx); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	} else {
 		// The object is being deleted
-		err := r.deleteGithubIssueObject(ghIssue, issue, ctx, token)
+		err := r.deleteGithubIssueObject(ghIssue, issue, findIssueErr, ctx, token)
 		return ctrl.Result{}, err
 	}
 
 	// if issue wasn't found (according to title) on github, create it
-	if issue == nil { //TODO check according to err not ot issue == nil
+	if fmt.Sprintf("%v", findIssueErr) == TitleNotFound { //TODO check according to err not ot issue == nil
 		//create a git request with github API
 		issue, err = create(ghIssue.Spec, token)
 		if err != nil {
@@ -119,7 +120,6 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// update status fields
 	err = r.updateStatus(ghIssue, issue, ctx)
-
 	if err != nil {
 		fmt.Print("status patch failed \n")
 		return ctrl.Result{}, err
@@ -161,7 +161,7 @@ func create(ghIssueSpec examplev1alpha1.GitHubIssueSpec, token string) (*Issue, 
 	req.Header.Set("Authorization", "token "+token)
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -170,13 +170,14 @@ func create(ghIssueSpec examplev1alpha1.GitHubIssueSpec, token string) (*Issue, 
 		body, _ := ioutil.ReadAll(resp.Body)
 		//print body as it may contain hints in case of errors
 		fmt.Println(string(body))
-		log.Fatal(err)
+		return nil, err
 	}
 	body, _ := ioutil.ReadAll(resp.Body)
 	var issue *Issue
 	err = json.Unmarshal(body, &issue)
+
 	//fmt.Println(string(body))
-	return issue, nil
+	return issue, err
 }
 
 type Repo struct {
@@ -207,7 +208,7 @@ func findIssue(ghIssueSpec examplev1alpha1.GitHubIssueSpec, token string) (*Issu
 	req.Header.Set("Authorization", "token "+token)
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := ioutil.ReadAll(resp.Body)
@@ -216,13 +217,18 @@ func findIssue(ghIssueSpec examplev1alpha1.GitHubIssueSpec, token string) (*Issu
 
 	var issues []Issue
 	err = json.Unmarshal(body, &issues)
+
+	if err != nil {
+		return nil, err
+	}
 	// loop over issues titles and look for the title given to the function
 	for _, issue := range issues {
 		if issue.Title == ghIssueSpec.Title {
 			return &issue, nil
 		}
 	}
-	return nil, nil
+	err = fmt.Errorf(TitleNotFound)
+	return nil, err
 }
 
 // edit : update issue description
@@ -254,13 +260,20 @@ func edit(ghIssueSpec examplev1alpha1.GitHubIssueSpec, issueNumber, token string
 	}
 }
 
+func (r *GitHubIssueReconciler) registerFinalizer(ghIssue examplev1alpha1.GitHubIssue, ctx context.Context) error {
+	controllerutil.AddFinalizer(&ghIssue, FinalizerName)
+	err := r.Update(ctx, &ghIssue)
+	return err
+}
+
 //deleteGithubIssueObject: delete the object, it finalizer exists - handle it and then delete object
 func (r *GitHubIssueReconciler) deleteGithubIssueObject(ghIssue examplev1alpha1.GitHubIssue, realWorldIssue *Issue,
-	ctx context.Context, token string) error {
+	findIssueErr error, ctx context.Context, token string) error {
 	if containsString(ghIssue.GetFinalizers(), FinalizerName) {
 		// our finalizer is present, so lets handle any external dependency
 		// if the issue isn't on github, skip the external handle and just remove finalizer
-		if realWorldIssue != nil {
+		if fmt.Sprintf("%v", findIssueErr) != TitleNotFound {
+			fmt.Println("find issue err was null!!! ", realWorldIssue.Title)
 			if err := r.deleteExternalResources(ghIssue.Spec, string(realWorldIssue.IssueNumber), token); err != nil {
 				// if fail to delete the external dependency here, return with error
 				// so that it can be retried
