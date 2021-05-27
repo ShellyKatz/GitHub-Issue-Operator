@@ -4,6 +4,6 @@ metadata:
   name: sample3
 spec:
   # Add fields here
-  repo: Shelly_Katz/TestGit9Issues
+  repo: ShellyKatz/TestGitIssues
   title: thirdTrial
   description: hello again!
