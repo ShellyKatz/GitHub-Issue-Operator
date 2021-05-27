@@ -15,10 +15,10 @@ package controllers
 
 import (
 	"context"
+	errors2 "github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"os"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-
 	//"strconv"
 	"strings"
 
@@ -68,7 +68,6 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	//get the object from the API server
 	ghIssue := examplev1alpha1.GitHubIssue{}
 	err := r.Client.Get(ctx, req.NamespacedName, &ghIssue)
-
 	if err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("\nobject was deleted (\"not found error\") - return with nil error")
@@ -79,11 +78,12 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	//bring the issue from the real world (if doesn't exists return nil and err)
 	token := os.Getenv("GITHUB_TOKEN")
-	issue, findIssueErr := findIssue(ghIssue.Spec, token) //TODO- HANDLE ERR/PRINT TO LOG
+
+	issue, findIssueErr := findIssue(ghIssue.Spec, token)
 	if findIssueErr != nil && fmt.Sprintf("%v", findIssueErr) != TitleNotFound {
-		return ctrl.Result{}, findIssueErr
+		return ctrl.Result{}, errors2.Wrap(findIssueErr, "error during findIssue")
 	}
-	fmt.Println("find issue is ok")
+	log.Info("find issue is ok")
 
 	// examine DeletionTimestamp to determine if object is under deletion
 	if ghIssue.ObjectMeta.DeletionTimestamp.IsZero() {
@@ -91,42 +91,41 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// add the finalizer and update the object.
 		if !containsString(ghIssue.GetFinalizers(), FinalizerName) {
 			if err = r.registerFinalizer(ghIssue, ctx); err != nil {
-				return ctrl.Result{}, err
+				return ctrl.Result{}, errors2.Wrap(err, "error during registerFinalizer")
 			}
 		}
 	} else {
 		// The object is being deleted
 		err := r.deleteGithubIssueObject(ghIssue, issue, findIssueErr, ctx, token)
-		return ctrl.Result{}, err
+		return ctrl.Result{}, errors2.Wrap(err, "error during deleteGithubIssueObject")
 	}
 
 	// if issue wasn't found (according to title) on github, create it
-	if fmt.Sprintf("%v", findIssueErr) == TitleNotFound { //TODO check according to err not ot issue == nil
-		//create a git request with github API
-		issue, err = create(ghIssue.Spec, token)
-		if err != nil {
-			fmt.Printf("create issue failed. error:, %s \n", err)
+	if fmt.Sprintf("%v", findIssueErr) == TitleNotFound {
+		if issue, err = create(ghIssue.Spec, token); err != nil {
+			return ctrl.Result{}, errors2.Wrap(err, "error during create")
 		} else {
-			fmt.Printf("created issue %s \n", string(issue.IssueNumber))
+			log.Info("created successfully", "issue number", string(issue.IssueNumber))
 		}
 	}
 
 	// edit description if needed
 	if ghIssue.Spec.Description != issue.Description {
 		//edit description only if there's a difference OR issue was closed
-		edit(ghIssue.Spec, string(issue.IssueNumber), token)
-		fmt.Printf("edit issue is ok, edited issue %s \n\n", string(issue.IssueNumber))
+		if err = edit(ghIssue.Spec, string(issue.IssueNumber), token); err != nil {
+			log.Info("problem here!!!")
+			return ctrl.Result{}, errors2.Wrap(err, "error during edit")
+		}
+		log.Info("edited successfully", "issue number", string(issue.IssueNumber))
 	}
 
 	// update status fields
-	err = r.updateStatus(ghIssue, issue, ctx)
-	if err != nil {
-		fmt.Print("status patch failed \n")
-		return ctrl.Result{}, err
+	if err = r.updateStatus(ghIssue, issue, ctx); err != nil {
+		return ctrl.Result{}, errors2.Wrap(err, "error during updateStatus")
 	}
 
 	fmt.Printf("title: %s \ndescription: %s\nstatus is: %s \n", ghIssue.Spec.Title, ghIssue.Spec.Description, ghIssue.Status.State)
-	fmt.Printf("last updated at %s \n", ghIssue.Status.LastUpdateTimestamp)
+	fmt.Printf("last updated at: %s \n", ghIssue.Status.LastUpdateTimestamp)
 
 	return ctrl.Result{}, nil
 }
@@ -232,7 +231,7 @@ func findIssue(ghIssueSpec examplev1alpha1.GitHubIssueSpec, token string) (*Issu
 }
 
 // edit : update issue description
-func edit(ghIssueSpec examplev1alpha1.GitHubIssueSpec, issueNumber, token string) {
+func edit(ghIssueSpec examplev1alpha1.GitHubIssueSpec, issueNumber, token string) error {
 	fmt.Printf("editing %s \n", issueNumber)
 	apiURL := "https://api.github.com/repos/" + ghIssueSpec.Repo + "/issues/" + issueNumber
 	// title is the only required field
@@ -243,11 +242,10 @@ func edit(ghIssueSpec examplev1alpha1.GitHubIssueSpec, issueNumber, token string
 	// creating client to set custom headers for Authorization
 	client := &http.Client{}
 	req, _ := http.NewRequest("PATCH", apiURL, bytes.NewReader(jsonData))
-
 	req.Header.Set("Authorization", "token "+token)
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -256,8 +254,10 @@ func edit(ghIssueSpec examplev1alpha1.GitHubIssueSpec, issueNumber, token string
 		body, _ := ioutil.ReadAll(resp.Body)
 		// print body as it may contain hints in case of errors
 		fmt.Println(string(body))
-		log.Fatal(err)
+		return err
 	}
+
+	return nil
 }
 
 func (r *GitHubIssueReconciler) registerFinalizer(ghIssue examplev1alpha1.GitHubIssue, ctx context.Context) error {
@@ -273,7 +273,6 @@ func (r *GitHubIssueReconciler) deleteGithubIssueObject(ghIssue examplev1alpha1.
 		// our finalizer is present, so lets handle any external dependency
 		// if the issue isn't on github, skip the external handle and just remove finalizer
 		if fmt.Sprintf("%v", findIssueErr) != TitleNotFound {
-			fmt.Println("find issue err was null!!! ", realWorldIssue.Title)
 			if err := r.deleteExternalResources(ghIssue.Spec, string(realWorldIssue.IssueNumber), token); err != nil {
 				// if fail to delete the external dependency here, return with error
 				// so that it can be retried
@@ -294,8 +293,6 @@ func (r *GitHubIssueReconciler) deleteGithubIssueObject(ghIssue examplev1alpha1.
 //deleteExternalResources: close github issue
 func (r *GitHubIssueReconciler) deleteExternalResources(ghIssueSpec examplev1alpha1.GitHubIssueSpec,
 	issueNumber, token string) error {
-	fmt.Printf("deleting %s \n", issueNumber)
-
 	apiURL := "https://api.github.com/repos/" + ghIssueSpec.Repo + "/issues/" + issueNumber
 	// title is the only required field
 	issueData := Issue{Repo: ghIssueSpec.Repo, Title: ghIssueSpec.Title, Description: ghIssueSpec.Description,
