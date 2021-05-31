@@ -33,6 +33,7 @@ import (
 	examplev1alpha1 "github.com/ShellyKatz/example-operator/api/v1alpha1"
 	"github.com/ShellyKatz/example-operator/controllers"
 	//+kubebuilder:scaffold:imports
+	github "github.com/ShellyKatz/example-operator/controllers/github"
 )
 
 var (
@@ -81,9 +82,10 @@ func main() {
 	}
 
 	if err = (&controllers.GitHubIssueReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("GitHubIssue"),
-		Scheme: mgr.GetScheme(),
+		Client:       mgr.GetClient(),
+		Log:          ctrl.Log.WithName("controllers").WithName("GitHubIssue"),
+		Scheme:       mgr.GetScheme(),
+		GithubClient: &github.ClientAPI{},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitHubIssue")
 		os.Exit(1)
