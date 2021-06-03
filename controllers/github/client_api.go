@@ -11,7 +11,6 @@ import (
 )
 
 const UrlPrefix = "https://api.github.com/repos/"
-const TitleNotFound = "object title not found on github"
 
 type ClientAPI struct {
 	httpClient http.Client

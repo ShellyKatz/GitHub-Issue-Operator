@@ -60,6 +60,7 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	log := r.Log.WithValues("githubissue", req.NamespacedName)
 	println("\n#########################################################################\n")
 	log.Info("\nENTERED RECONCILE WITH")
+	println("here1")
 
 	//get the object from the API server
 	ghIssue := examplev1alpha1.GitHubIssue{}
@@ -67,10 +68,12 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("\nobject was deleted (\"not found error\") - return with nil error")
-			return ctrl.Result{}, nil
+			println("ding ding ding")
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, err
 	}
+	println("here2")
 
 	//bring the issue from the real world (if doesn't exists return nil and err)
 	token := os.Getenv("GITHUB_TOKEN")
@@ -79,6 +82,7 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, errors2.Wrap(findIssueErr, "error during findIssue")
 	}
 	log.Info("find issue is ok")
+	println("here3")
 	// examine DeletionTimestamp to determine if object is under deletion
 	if ghIssue.ObjectMeta.DeletionTimestamp.IsZero() {
 		// The object is not being deleted, so if it does not have our finalizer,
@@ -93,7 +97,7 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		err := r.deleteGithubIssueObject(ghIssue, issue, findIssueErr, ctx, token)
 		return ctrl.Result{}, errors2.Wrap(err, "error during deleteGithubIssueObject")
 	}
-
+	println("here4")
 	// if issue wasn't found (according to title) on github, create it
 	if fmt.Sprintf("%v", findIssueErr) == TitleNotFound {
 		if issue, err = r.GithubClient.Create(ghIssue.Spec, token); err != nil {
