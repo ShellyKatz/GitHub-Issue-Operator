@@ -17,10 +17,10 @@ import (
 	"time"
 )
 
-//var s = createAndAddScheme()
+var s = createAndAddScheme()
 
 func newGithubIssueRuntimeObject(title, description, state, lastUpdateTimeStamp string, finalizersList []string,
-								 isBeingDeleted bool) runtime.Object {
+								 isBeingDeleted bool) examplev1alpha1.GitHubIssue{
 	ghIssueObj := examplev1alpha1.GitHubIssue{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ghTest",
@@ -44,7 +44,7 @@ func newGithubIssueRuntimeObject(title, description, state, lastUpdateTimeStamp 
 		}
 		ghIssueObj.SetDeletionTimestamp(&time)
 	}
-	return ghIssueObj.DeepCopy()
+	return ghIssueObj
 }
 
 func createReconciler(fakeGithubClient *github.FakeClient, fakeK8sClient client.Client, s *runtime.Scheme) GitHubIssueReconciler {
@@ -56,8 +56,12 @@ func createReconciler(fakeGithubClient *github.FakeClient, fakeK8sClient client.
 	}
 }
 
-func newFakeK8sClient(objects... runtime.Object) client.Client {
-	fakeK8sClient := fake.NewClientBuilder().WithRuntimeObjects(objects...).Build()
+func newFakeK8sClient(objects... examplev1alpha1.GitHubIssue) client.Client {
+	var runtimeObjects []runtime.Object
+	for _, obj := range objects {
+		runtimeObjects = append(runtimeObjects, obj.DeepCopy())
+	}
+	fakeK8sClient := fake.NewClientBuilder().WithRuntimeObjects(runtimeObjects...).Build()
 	return fakeK8sClient
 }
 
@@ -88,9 +92,7 @@ func createFakeGithubIssue()  github.Issue{
 }
 
 func TestSuccessfulCreate(t *testing.T) {
-	//given a valid ghIssue
-	s := createAndAddScheme()
-
+	//given an empty repository and a valid ghIssue object
 	fakeGithubClient := github.NewFakeClient([]*github.Issue{}, false, "no error")
 
 	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...", "", "",
@@ -116,9 +118,7 @@ func TestSuccessfulCreate(t *testing.T) {
 }
 
 func TestUnsuccessfulCreate(t *testing.T) {
-	//given we fail to create a real issue
-	s := createAndAddScheme()
-
+	//given a ghIssue object and a fake github client that always fails on create
 	fakeGithubClient := github.NewFakeClient([]*github.Issue{}, true, github.CreatError)
 
 	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...", "", "",
@@ -138,17 +138,12 @@ func TestUnsuccessfulCreate(t *testing.T) {
 	}
 }
 
-//test case: if the issue title already exists in repo
-//and both (object and real issue) have the same description - don't create it and don't edit description
 func TestCreateAnExistingIssueNoEdit(t *testing.T) {
-	//given a valid ghIssue object that it's title already appears in repo
+	//given a valid ghIssue object that it's title already appears in repo and have the same description
 	issue := createFakeGithubIssue()
 
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, false, "no error")
-
-	s := scheme.Scheme
-	examplev1alpha1.AddToScheme(s)
 
 	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...",
 		                                 "", "", []string{}, false)
@@ -175,8 +170,6 @@ func TestSuccessfulEdit(t *testing.T) {
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, false, "no error")
 
-	s := createAndAddScheme()
-
 	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...edit!", "", "",
 												[]string{},false)
 	fakeK8sClient := newFakeK8sClient(ghIssueObj)
@@ -186,7 +179,8 @@ func TestSuccessfulEdit(t *testing.T) {
 	//when reconciling
 	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
-	//then reconciler completes and returns ctrl.Result{} no error and object isn't added to repo
+	//then reconciler completes and returns ctrl.Result{} no error, object isn't added to repo
+	//and the github issue's description (in "real world") is edited
 	if err != nil {
 		t.Errorf("Expected no error but got an error: %v", err)
 	}
@@ -200,13 +194,11 @@ func TestSuccessfulEdit(t *testing.T) {
 }
 
 func TestUnsuccessfulEdit(t *testing.T) {
-	//given a valid ghIssue that it's title already appears in repo but with different description
+	//given a ghIssue object and a fake github client that always fails on edit
 	issue := createFakeGithubIssue()
 
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, true, github.EditError)
-
-	s := createAndAddScheme()
 
 	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...edit!", "", "",
 												[]string{} ,false)
@@ -217,7 +209,7 @@ func TestUnsuccessfulEdit(t *testing.T) {
 	//when reconciling
 	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
-	//then reconciler completes and returns ctrl.Result{} no error and object isn't added to repo
+	//then reconciler completes and returns ctrl.Result{} and an error
 	if err == nil {
 		t.Errorf("Expected an error but got nil")
 	} else {
@@ -226,13 +218,11 @@ func TestUnsuccessfulEdit(t *testing.T) {
 }
 
 func TestSuccessfulDelete(t *testing.T) {
-	//given a valid ghIssue that it's title already appears in repo but with different description
+	//given a valid ghIssue with a deletion timestamp and a finalizer
 	issue := createFakeGithubIssue()
 
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, false, "no error")
-
-	s := createAndAddScheme()
 
 	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...", "", "",
 												[]string{FinalizerName} ,true)
@@ -243,11 +233,11 @@ func TestSuccessfulDelete(t *testing.T) {
 	//when reconciling
 	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
-	//then reconciler completes and returns ctrl.Result{} no error and object isn't added to repo
+	//then reconciler completes and returns ctrl.Result{} no error and object's state becomes "closed"
 	if err != nil {
 		t.Errorf("Expected no error but got an error: %v", err)
 	}
-	if fakeGithubClient.Issues[0].State != "closed" {
+	if fakeGithubClient.Issues[0].State!= "closed" {
 		t.Errorf("Expected issue's state to be \"closed\" but got: %s", fakeGithubClient.Issues[0].State)
 	}
 }
@@ -257,8 +247,6 @@ func TestUnsuccessfulDelete(t *testing.T) {
 	issue := createFakeGithubIssue()
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, true, github.DeleteError)
-
-	s := createAndAddScheme()
 
 	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...", "", "",
 												[]string{FinalizerName} ,true)
