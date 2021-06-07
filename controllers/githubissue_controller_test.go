@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+//var s = createAndAddScheme()
+
 func newGithubIssueRuntimeObject(title, description, state, lastUpdateTimeStamp string, finalizersList []string,
 								 isBeingDeleted bool) runtime.Object {
 	ghIssueObj := examplev1alpha1.GitHubIssue{
@@ -35,7 +37,7 @@ func newGithubIssueRuntimeObject(title, description, state, lastUpdateTimeStamp 
 			LastUpdateTimestamp: lastUpdateTimeStamp,
 		},
 	}
-
+	//add deletion timestamp
 	if isBeingDeleted == true {
 		time := v1.Time{
 			Time: time.Now(),
@@ -54,35 +56,51 @@ func createReconciler(fakeGithubClient *github.FakeClient, fakeK8sClient client.
 	}
 }
 
-func newFakeK8sClient(objects []runtime.Object) client.Client {
+func newFakeK8sClient(objects... runtime.Object) client.Client {
 	fakeK8sClient := fake.NewClientBuilder().WithRuntimeObjects(objects...).Build()
 	return fakeK8sClient
 }
 
-func TestSuccessfulCreate(t *testing.T) {
-	//given a valid ghIssue
-	s := scheme.Scheme
-	examplev1alpha1.AddToScheme(s)
-
-	fakeGithubClient := github.NewFakeClient([]*github.Issue{}, false, "no error")
-
-	ghIssueObj := newGithubIssueRuntimeObject("testSuccessfulCreate", "testing...", "", "",
-		                                       []string{},false)
-
-	objects := []runtime.Object{ghIssueObj}
-	fakeK8sClient := newFakeK8sClient(objects)
-
-	r := createReconciler(fakeGithubClient, fakeK8sClient, s)
-
-	//when reconciling
-	req := reconcile.Request{
+func createReq() reconcile.Request{
+	return reconcile.Request{
 		NamespacedName: types.NamespacedName{
 			Name:      "ghTest",
 			Namespace: "default",
 		},
 	}
+}
 
-	_, err := r.Reconcile(context.Background(), req) //TODO what should I do with the "result" val?
+func createAndAddScheme() *runtime.Scheme{
+	s := scheme.Scheme
+	examplev1alpha1.AddToScheme(s)
+	return s
+}
+
+func createFakeGithubIssue()  github.Issue{
+	return github.Issue{
+		Repo:                "testUser/testRepo",
+		Title:               "testIssue",
+		Description:         "testing...",
+		IssueNumber:         "1",
+		State:               "open",
+		LastUpdateTimestamp: "2021-05-31T07:49:28Z",
+	}
+}
+
+func TestSuccessfulCreate(t *testing.T) {
+	//given a valid ghIssue
+	s := createAndAddScheme()
+
+	fakeGithubClient := github.NewFakeClient([]*github.Issue{}, false, "no error")
+
+	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...", "", "",
+		                                       []string{},false)
+	fakeK8sClient := newFakeK8sClient(ghIssueObj)
+
+	r := createReconciler(fakeGithubClient, fakeK8sClient, s)
+
+	//when reconciling
+	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
 	//then reconciler completes and returns ctrl.Result{} and no error
 	if err != nil {
@@ -99,27 +117,18 @@ func TestSuccessfulCreate(t *testing.T) {
 
 func TestUnsuccessfulCreate(t *testing.T) {
 	//given we fail to create a real issue
-	s := scheme.Scheme
-	examplev1alpha1.AddToScheme(s)
+	s := createAndAddScheme()
 
 	fakeGithubClient := github.NewFakeClient([]*github.Issue{}, true, github.CreatError)
-	//fakeGithubClient.Fail(github.CreatError) //fail create
 
-	ghIssueObj := newGithubIssueRuntimeObject("testUnsuccessfulCreate", "testing...", "", "",
+	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...", "", "",
 		                                       []string{},false)
-	objects := []runtime.Object{ghIssueObj}
-	fakeK8sClient := newFakeK8sClient(objects)
+	fakeK8sClient := newFakeK8sClient(ghIssueObj)
 
 	r := createReconciler(fakeGithubClient, fakeK8sClient, s)
 
 	//when reconciling
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      "ghTest",
-			Namespace: "default",
-		},
-	}
-	_, err := r.Reconcile(context.Background(), req) //TODO what should I do with the "result" val?
+	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
 	//then reconciler returns ctrl.Result{} and an error
 	if err == nil {
@@ -127,21 +136,13 @@ func TestUnsuccessfulCreate(t *testing.T) {
 	} else {
 		t.Logf("err is %v", err)
 	}
-
 }
 
 //test case: if the issue title already exists in repo
 //and both (object and real issue) have the same description - don't create it and don't edit description
 func TestCreateAnExistingIssueNoEdit(t *testing.T) {
-	//given a valid ghIssue that it's title already appears in repo
-	issue := github.Issue{
-		Repo:                "testUser/testRepo",
-		Title:               "testUnsuccessfulCreate",
-		Description:         "testing...",
-		IssueNumber:         "1",
-		State:               "open",
-		LastUpdateTimestamp: "2021-05-31T07:49:28Z",
-	}
+	//given a valid ghIssue object that it's title already appears in repo
+	issue := createFakeGithubIssue()
 
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, false, "no error")
@@ -149,22 +150,14 @@ func TestCreateAnExistingIssueNoEdit(t *testing.T) {
 	s := scheme.Scheme
 	examplev1alpha1.AddToScheme(s)
 
-	ghIssueObj := newGithubIssueRuntimeObject("testUnsuccessfulCreate", "testing...",
+	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...",
 		                                 "", "", []string{}, false)
-	objects := []runtime.Object{ghIssueObj}
-	fakeK8sClient := newFakeK8sClient(objects)
+	fakeK8sClient := newFakeK8sClient(ghIssueObj)
 
 	r := createReconciler(fakeGithubClient, fakeK8sClient, s)
 
 	//when reconciling
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      "ghTest",
-			Namespace: "default",
-		},
-	}
-
-	_, err := r.Reconcile(context.Background(), req) //TODO what should I do with the "result" val?
+	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
 	//then reconciler completes and returns ctrl.Result{} no error and object isn't added to repo
 	if err != nil {
@@ -177,37 +170,21 @@ func TestCreateAnExistingIssueNoEdit(t *testing.T) {
 
 func TestSuccessfulEdit(t *testing.T) {
 	//given a valid ghIssue that it's title already appears in repo but with different description
-	issue := github.Issue{
-		Repo:                "testUser/testRepo",
-		Title:               "testUnsuccessfulCreate",
-		Description:         "testing...",
-		IssueNumber:         "1",
-		State:               "open",
-		LastUpdateTimestamp: "2021-05-31T07:49:28Z",
-	}
+	issue := createFakeGithubIssue()
 
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, false, "no error")
 
-	s := scheme.Scheme
-	examplev1alpha1.AddToScheme(s)
+	s := createAndAddScheme()
 
-	ghIssueObj := newGithubIssueRuntimeObject("testUnsuccessfulCreate", "testing...edit!", "", "",
+	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...edit!", "", "",
 												[]string{},false)
-	objects := []runtime.Object{ghIssueObj}
-	fakeK8sClient := newFakeK8sClient(objects)
+	fakeK8sClient := newFakeK8sClient(ghIssueObj)
 
 	r := createReconciler(fakeGithubClient, fakeK8sClient, s)
 
 	//when reconciling
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      "ghTest",
-			Namespace: "default",
-		},
-	}
-
-	_, err := r.Reconcile(context.Background(), req) //TODO what should I do with the "result" val?
+	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
 	//then reconciler completes and returns ctrl.Result{} no error and object isn't added to repo
 	if err != nil {
@@ -224,37 +201,21 @@ func TestSuccessfulEdit(t *testing.T) {
 
 func TestUnsuccessfulEdit(t *testing.T) {
 	//given a valid ghIssue that it's title already appears in repo but with different description
-	issue := github.Issue{
-		Repo:                "testUser/testRepo",
-		Title:               "testUnsuccessfulCreate",
-		Description:         "testing...",
-		IssueNumber:         "1",
-		State:               "open",
-		LastUpdateTimestamp: "2021-05-31T07:49:28Z",
-	}
+	issue := createFakeGithubIssue()
 
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, true, github.EditError)
 
-	s := scheme.Scheme
-	examplev1alpha1.AddToScheme(s)
+	s := createAndAddScheme()
 
-	ghIssueObj := newGithubIssueRuntimeObject("testUnsuccessfulCreate", "testing...edit!", "", "",
+	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...edit!", "", "",
 												[]string{} ,false)
-	objects := []runtime.Object{ghIssueObj}
-	fakeK8sClient := newFakeK8sClient(objects)
+	fakeK8sClient := newFakeK8sClient(ghIssueObj)
 
 	r := createReconciler(fakeGithubClient, fakeK8sClient, s)
 
 	//when reconciling
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      "ghTest",
-			Namespace: "default",
-		},
-	}
-
-	_, err := r.Reconcile(context.Background(), req) //TODO what should I do with the "result" val?
+	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
 	//then reconciler completes and returns ctrl.Result{} no error and object isn't added to repo
 	if err == nil {
@@ -266,38 +227,21 @@ func TestUnsuccessfulEdit(t *testing.T) {
 
 func TestSuccessfulDelete(t *testing.T) {
 	//given a valid ghIssue that it's title already appears in repo but with different description
-	issue := github.Issue{
-		Repo:                "testUser/testRepo",
-		Title:               "testSuccessfulDelete",
-		Description:         "testing...",
-		IssueNumber:         "1",
-		State:               "open",
-		LastUpdateTimestamp: "2021-05-31T07:49:28Z",
-	}
+	issue := createFakeGithubIssue()
 
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, false, "no error")
 
-	s := scheme.Scheme
-	examplev1alpha1.AddToScheme(s)
+	s := createAndAddScheme()
 
-	ghIssueObj := newGithubIssueRuntimeObject("testSuccessfulDelete", "testing...", "", "",
-		[]string{FinalizerName} ,true)
-
-	objects := []runtime.Object{ghIssueObj}
-	fakeK8sClient := newFakeK8sClient(objects)
+	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...", "", "",
+												[]string{FinalizerName} ,true)
+	fakeK8sClient := newFakeK8sClient(ghIssueObj)
 
 	r := createReconciler(fakeGithubClient, fakeK8sClient, s)
 
 	//when reconciling
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      "ghTest",
-			Namespace: "default",
-		},
-	}
-
-	_, err := r.Reconcile(context.Background(), req) //TODO what should I do with the "result" val?
+	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
 	//then reconciler completes and returns ctrl.Result{} no error and object isn't added to repo
 	if err != nil {
@@ -310,38 +254,20 @@ func TestSuccessfulDelete(t *testing.T) {
 
 func TestUnsuccessfulDelete(t *testing.T) {
 	//given a unValid ghIssue that in repo
-	issue := github.Issue{
-		Repo:                "testUser/testRepo",
-		Title:               "testUnsuccessfulDelete",
-		Description:         "testing...",
-		IssueNumber:         "1",
-		State:               "open",
-		LastUpdateTimestamp: "2021-05-31T07:49:28Z",
-	}
-
+	issue := createFakeGithubIssue()
 	fakeRepo := []*github.Issue{&issue}
 	fakeGithubClient := github.NewFakeClient(fakeRepo, true, github.DeleteError)
 
-	s := scheme.Scheme
-	examplev1alpha1.AddToScheme(s)
+	s := createAndAddScheme()
 
-	ghIssueObj := newGithubIssueRuntimeObject("testUnsuccessfulDelete", "testing...", "", "",
-		[]string{FinalizerName} ,true)
-
-	objects := []runtime.Object{ghIssueObj}
-	fakeK8sClient := newFakeK8sClient(objects)
+	ghIssueObj := newGithubIssueRuntimeObject("testIssue", "testing...", "", "",
+												[]string{FinalizerName} ,true)
+	fakeK8sClient := newFakeK8sClient(ghIssueObj)
 
 	r := createReconciler(fakeGithubClient, fakeK8sClient, s)
 
 	//when reconciling
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      "ghTest",
-			Namespace: "default",
-		},
-	}
-
-	_, err := r.Reconcile(context.Background(), req) //TODO what should I do with the "result" val?
+	_, err := r.Reconcile(context.Background(), createReq()) //TODO what should I do with the "result" val?
 
 	//then reconciler completes and returns ctrl.Result{} no error and object isn't added to repo
 	if err == nil {
